@@ -52,3 +52,5 @@ tmp/
 web/*
 
 .devtools
+run.local.cmd
+run.local.ps1
