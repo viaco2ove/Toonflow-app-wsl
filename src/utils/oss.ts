@@ -1,7 +1,7 @@
 import isPathInside from "is-path-inside";
 import fs from "node:fs/promises";
 import path from "node:path";
-import u from "@/utils";
+import { getUploadRootDir } from "@/lib/runtimePaths";
 
 // 规范化路径：去除前导斜杠，并将路径分隔符统一转换为系统分隔符
 function normalizeUserPath(userPath: string): string {
@@ -27,13 +27,7 @@ class OSS {
   private initPromise: Promise<void>;
 
   constructor() {
-    if (typeof process.versions?.electron !== "undefined") {
-      const { app } = require("electron");
-      const userDataDir: string = app.getPath("userData");
-      this.rootDir = path.join(userDataDir, "uploads");
-    } else {
-      this.rootDir = path.join(process.cwd(), "uploads");
-    }
+    this.rootDir = getUploadRootDir();
     // 初始化时自动创建根目录
     this.initPromise = fs.mkdir(this.rootDir, { recursive: true }).then(() => {});
   }
@@ -55,7 +49,7 @@ class OSS {
     await this.ensureInit();
     const safePath = normalizeUserPath(userRelPath);
     // URL 始终使用 /，所以这里需要将系统分隔符转回 /
-    const url = process.env.OSSURL || `http://127.0.0.1:60000/`;
+    const url = (process.env.OSSURL || "").trim() || `http://127.0.0.1:${process.env.PORT || "60000"}/`;
     return `${url}${safePath.split(path.sep).join("/")}`;
   }
 

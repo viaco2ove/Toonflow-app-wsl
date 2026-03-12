@@ -4,7 +4,8 @@ import fs from "fs";
 import startServe, { closeServe } from "src/app";
 
 // 默认端口配置
-const defaultPort = 60000;
+const envPort = Number.parseInt((process.env.PORT || "").trim(), 10);
+const defaultPort = Number.isFinite(envPort) ? envPort : 60000;
 let mainWindow: BrowserWindow | null = null;
 
 function isWslLinux(): boolean {
@@ -80,7 +81,7 @@ function createMainWindow(port: number): void {
   url.searchParams.set("baseUrl", baseUrl);
   url.searchParams.set("wsBaseUrl", wsBaseUrl);
   
-  console.log("%c Line:30 🥓 url", "background:#33a5ff", url.toString());
+  console.log("[MainWindow] URL:", url.toString());
 
   void mainWindow.loadURL(url.toString());
   mainWindow.on("closed", () => {

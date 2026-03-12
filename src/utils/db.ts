@@ -7,18 +7,12 @@ import initDB from "@/lib/initDB";
 import fixDB from "@/lib/fixDB";
 import type { DB } from "@/types/database";
 import crypto from "crypto";
+import { getDbPath } from "@/lib/runtimePaths";
 
 type TableName = keyof DB & string;
 type RowType<TName extends TableName> = DB[TName];
 
-let dbPath: string;
-if (typeof process.versions?.electron !== "undefined") {
-  const { app } = require("electron");
-  const userDataDir: string = app.getPath("userData");
-  dbPath = path.join(userDataDir, "db.sqlite");
-} else {
-  dbPath = path.join(process.cwd(), "db.sqlite");
-}
+const dbPath = getDbPath();
 console.log("数据库目录:", dbPath);
 const dbDir = path.dirname(dbPath);
 

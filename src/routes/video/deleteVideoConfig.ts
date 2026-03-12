@@ -3,8 +3,6 @@ import u from "@/utils";
 import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import { z } from "zod";
-import fs from "fs";
-import path from "path";
 const router = express.Router();
 
 // 删除视频配置
@@ -40,20 +38,9 @@ export default router.post(
 
     // 删除文件
     for (const filePath of filesToDelete) {
-      let rootDir: string;
-      if (typeof process.versions?.electron !== "undefined") {
-        const { app } = require("electron");
-        const userDataDir: string = app.getPath("userData");
-        rootDir = path.join(userDataDir, "uploads");
-      } else {
-        rootDir = path.join(process.cwd(), "uploads");
-      }
       try {
-        const absolutePath = path.join(rootDir, filePath);
-        if (fs.existsSync(absolutePath)) {
-          fs.unlinkSync(absolutePath);
-          console.log("[删除视频配置] 删除文件:", absolutePath);
-        }
+        await u.oss.deleteFile(filePath);
+        console.log("[删除视频配置] 删除文件:", filePath);
       } catch (err) {
         console.error("[删除视频配置] 删除文件失败:", filePath, err);
       }

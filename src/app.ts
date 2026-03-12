@@ -7,9 +7,9 @@ import logger from "morgan";
 import cors from "cors";
 import buildRoute from "@/core";
 import fs from "fs";
-import path from "path";
 import u from "@/utils";
 import jwt from "jsonwebtoken";
+import { getUploadRootDir } from "@/lib/runtimePaths";
 
 function ensureNoProxyForLocalhost() {
   const localHosts = ["127.0.0.1", "localhost", "::1"];
@@ -49,14 +49,7 @@ export default async function startServe(randomPort: Boolean = false) {
   app.use(express.json({ limit: "100mb" }));
   app.use(express.urlencoded({ extended: true, limit: "100mb" }));
 
-  let rootDir: string;
-  if (typeof process.versions?.electron !== "undefined") {
-    const { app } = require("electron");
-    const userDataDir: string = app.getPath("userData");
-    rootDir = path.join(userDataDir, "uploads");
-  } else {
-    rootDir = path.join(process.cwd(), "uploads");
-  }
+  const rootDir = getUploadRootDir();
 
   // 确保 uploads 目录存在
   if (!fs.existsSync(rootDir)) {
@@ -113,7 +106,8 @@ export default async function startServe(randomPort: Boolean = false) {
     return res.status(status).send(err);
   });
 
-  const port = randomPort ? 0 : parseInt(process.env.PORT || "60000");
+  const configuredPort = Number.parseInt((process.env.PORT || "").trim(), 10);
+  const port = randomPort ? 0 : Number.isFinite(configuredPort) ? configuredPort : 60000;
   return await new Promise((resolve, reject) => {
     server = app.listen(port, async (v) => {
       const address = server?.address();
