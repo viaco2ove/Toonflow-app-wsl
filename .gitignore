@@ -42,6 +42,12 @@ uploads/*
 db.sqlite
 db.sqlite-shm
 db.sqlite-wal
+db.sqlite.bak_*
+
+# local backup artifacts
+*.bak
+*.bak_*
+tmp/
 
 web/*
 

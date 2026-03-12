@@ -4,6 +4,7 @@ import path from "path";
 // 默认环境变量（当 env 文件不存在时自动创建）
 const defaultEnvValues: Record<string, string> = {
   dev: `NODE_ENV=dev\nPORT=60000\nOSSURL=http://127.0.0.1:60000/\nDB_PATH=\nUPLOAD_DIR=`,
+  local: `NODE_ENV=local\nPORT=60000\nOSSURL=http://127.0.0.1:60000/\nDB_PATH=\nUPLOAD_DIR=`,
   prod: `NODE_ENV=prod\nPORT=60000\nOSSURL=http://127.0.0.1:60000/\nDB_PATH=\nUPLOAD_DIR=`,
 };
 

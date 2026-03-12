@@ -40,7 +40,7 @@ const app = express();
 let server: ReturnType<typeof app.listen> | null = null;
 
 export default async function startServe(randomPort: Boolean = false) {
-  if (process.env.NODE_ENV == "dev") await buildRoute();
+  if (["dev", "local"].includes((process.env.NODE_ENV || "").toLowerCase())) await buildRoute();
 
   expressWs(app);
 
@@ -99,7 +99,7 @@ export default async function startServe(randomPort: Boolean = false) {
       return res.status(status).send({
         message: err.message || "Internal Server Error",
         name: err.name,
-        ...(process.env.NODE_ENV === "dev" ? { stack: err.stack } : {}),
+        ...(["dev", "local"].includes((process.env.NODE_ENV || "").toLowerCase()) ? { stack: err.stack } : {}),
       });
     }
     if (typeof err === "string") return res.status(status).send({ message: err });

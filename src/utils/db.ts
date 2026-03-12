@@ -37,7 +37,7 @@ const db = knex({
 (async () => {
   await initDB(db);
   await fixDB(db);
-  if (process.env.NODE_ENV == "dev") initKnexType(db);
+  if (["dev", "local"].includes((process.env.NODE_ENV || "").toLowerCase())) initKnexType(db);
 })();
 
 const dbClient = Object.assign(<TName extends TableName>(table: TName) => db<RowType<TName>, RowType<TName>[]>(table), db);

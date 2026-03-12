@@ -20,6 +20,7 @@
   "scripts": {
     "dev": "nodemon --inspect --exec tsx src/app.ts",
     "dev:gui": "electronmon -r tsx scripts/main.ts",
+    "local:gui": "cross-env NODE_ENV=local electronmon -r tsx scripts/main.ts",
     "lint": "tsc --noEmit",
     "build": "cross-env NODE_ENV=prod tsx scripts/build.ts",
     "pack": "electron-builder --dir",
