@@ -16,20 +16,29 @@ if (isElectron) {
   isPackaged = app.isPackaged;
 }
 
+function resolveEnvDir(currentEnv: string): string {
+  const projectEnvDir = path.resolve("env");
+  if (!isElectron) return projectEnvDir;
+
+  const { app } = require("electron");
+  const userDataEnvDir = path.join(app.getPath("userData"), "env");
+  if (isPackaged) return userDataEnvDir;
+
+  // 本地开发（含 local）优先使用项目根目录 env，若不存在再回退到 userData/env
+  const projectEnvFile = path.join(projectEnvDir, `.env.${currentEnv}`);
+  const userDataEnvFile = path.join(userDataEnvDir, `.env.${currentEnv}`);
+  if (existsSync(projectEnvFile)) return projectEnvDir;
+  if (existsSync(userDataEnvFile)) return userDataEnvDir;
+  return projectEnvDir;
+}
+
 //加载环境变量（打包环境默认使用 prod）
 const env = process.env.NODE_ENV ?? (isPackaged ? "prod" : "dev");
 if (!env) {
-  console.log("[环境变量为空]");
+  console.log("[env] empty NODE_ENV");
   process.exit(1);
 } else {
-  // Electron 打包环境使用 userData 目录，开发环境使用项目根目录
-  let envDir: string;
-  if (isElectron) {
-    const { app } = require("electron");
-    envDir = path.join(app.getPath("userData"), "env");
-  } else {
-    envDir = path.resolve("env");
-  }
+  const envDir = resolveEnvDir(env);
   const envFilePath = path.join(envDir, `.env.${env}`);
 
   // 自动创建 env 目录和文件（.gitignore 可能忽略了这些文件）
@@ -39,7 +48,7 @@ if (!env) {
   if (!existsSync(envFilePath)) {
     const content = defaultEnvValues[env] ?? defaultEnvValues.prod;
     writeFileSync(envFilePath, content, "utf8");
-    console.log(`[环境变量] 自动创建 ${envFilePath}`);
+    console.log(`[env] created ${envFilePath}`);
   }
 
   let text = readFileSync(envFilePath, "utf8");
@@ -60,7 +69,16 @@ if (!env) {
 
   for (const line of text.split("\n")) {
     const idx = line.indexOf("=");
-    if (idx > 0) process.env[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+    if (idx > 0) {
+      const key = line.slice(0, idx).trim();
+      const value = line.slice(idx + 1).trim();
+      const current = process.env[key];
+      // 允许命令行/脚本提前注入的环境变量覆盖 env 文件配置
+      if (typeof current === "undefined" || current === "") {
+        process.env[key] = value;
+      }
+    }
   }
-  console.log(`[环境变量] ${env}`);
+  console.log(`[env] ${env}`);
+  console.log(`[env] file ${envFilePath}`);
 }

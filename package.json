@@ -21,6 +21,8 @@
     "dev": "nodemon --inspect --exec tsx src/app.ts",
     "dev:gui": "electronmon -r tsx scripts/main.ts",
     "local:gui": "cross-env NODE_ENV=local electronmon -r tsx scripts/main.ts",
+    "local:gui:win:cmd": "cmd /c scripts\\windows\\local-gui.cmd",
+    "local:gui:win:ps": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\windows\\local-gui.ps1",
     "lint": "tsc --noEmit",
     "build": "cross-env NODE_ENV=prod tsx scripts/build.ts",
     "pack": "electron-builder --dir",

@@ -13,7 +13,10 @@ type TableName = keyof DB & string;
 type RowType<TName extends TableName> = DB[TName];
 
 const dbPath = getDbPath();
-console.log("数据库目录:", dbPath);
+console.log("Database path:", dbPath);
+if (process.platform === "win32" && /^\\\\wsl\\$/i.test(dbPath)) {
+  console.warn("[db] DB path is on \\\\wsl$ share. On Windows this may trigger SQLITE_BUSY due to file-lock semantics.");
+}
 const dbDir = path.dirname(dbPath);
 
 // 确保数据库目录存在
@@ -26,25 +29,84 @@ if (!fs.existsSync(dbPath)) {
   fs.writeFileSync(dbPath, "");
 }
 
+function getPositiveIntEnv(name: string, fallback: number): number {
+  const raw = (process.env[name] || "").trim();
+  const value = Number.parseInt(raw, 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+const SQLITE_BUSY_TIMEOUT_MS = getPositiveIntEnv("DB_BUSY_TIMEOUT_MS", 15000);
+const SQLITE_BUSY_RETRY_TIMES = getPositiveIntEnv("DB_BUSY_RETRY_TIMES", 8);
+const SQLITE_BUSY_RETRY_DELAY_MS = getPositiveIntEnv("DB_BUSY_RETRY_DELAY_MS", 500);
+
 const db = knex({
   client: "sqlite3",
   connection: {
     filename: dbPath,
   },
+  acquireConnectionTimeout: SQLITE_BUSY_TIMEOUT_MS + 5000,
+  pool: {
+    min: 1,
+    max: 1,
+  },
   useNullAsDefault: true,
 });
 
-(async () => {
-  await initDB(db);
-  await fixDB(db);
-  if (["dev", "local"].includes((process.env.NODE_ENV || "").toLowerCase())) initKnexType(db);
-})();
+void (async () => {
+  await withSqliteBusyRetry("configureSqlite", () => configureSqlite(db));
+  await withSqliteBusyRetry("initDB", () => initDB(db));
+  await withSqliteBusyRetry("fixDB", () => fixDB(db));
+  if (["dev", "local"].includes((process.env.NODE_ENV || "").toLowerCase())) {
+    await withSqliteBusyRetry("initKnexType", () => initKnexType(db));
+  }
+})().catch((err) => {
+  console.error("[db] bootstrap failed:", err);
+});
 
 const dbClient = Object.assign(<TName extends TableName>(table: TName) => db<RowType<TName>, RowType<TName>[]>(table), db);
 dbClient.schema = db.schema;
 export default dbClient;
 
 export { db };
+
+async function configureSqlite(knexDb: any) {
+  await knexDb.raw(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+  try {
+    await knexDb.raw("PRAGMA journal_mode = WAL");
+  } catch (err: any) {
+    console.warn("[db] PRAGMA journal_mode=WAL failed, fallback to default:", err?.message || String(err));
+  }
+  await knexDb.raw("PRAGMA synchronous = NORMAL");
+  await knexDb.raw("PRAGMA temp_store = MEMORY");
+}
+
+function isSqliteBusyError(err: any): boolean {
+  const msg = String(err?.message || "");
+  return err?.code === "SQLITE_BUSY" || msg.includes("SQLITE_BUSY");
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withSqliteBusyRetry<T>(actionName: string, fn: () => Promise<T>): Promise<T> {
+  let attempt = 0;
+  while (true) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      if (!isSqliteBusyError(err) || attempt >= SQLITE_BUSY_RETRY_TIMES) {
+        throw err;
+      }
+      attempt += 1;
+      const waitMs = SQLITE_BUSY_RETRY_DELAY_MS * attempt;
+      console.warn(
+        `[db] SQLITE_BUSY during ${actionName}, retry ${attempt}/${SQLITE_BUSY_RETRY_TIMES} after ${waitMs}ms`,
+      );
+      await sleep(waitMs);
+    }
+  }
+}
 
 async function initKnexType(knexDb: any) {
   const { Client } = await import("@rmp135/sql-ts");

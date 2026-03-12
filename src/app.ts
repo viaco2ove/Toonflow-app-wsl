@@ -55,7 +55,7 @@ export default async function startServe(randomPort: Boolean = false) {
   if (!fs.existsSync(rootDir)) {
     fs.mkdirSync(rootDir, { recursive: true });
   }
-  console.log("文件目录:", rootDir);
+  console.log("Upload dir:", rootDir);
 
   app.use(express.static(rootDir));
 
@@ -112,7 +112,7 @@ export default async function startServe(randomPort: Boolean = false) {
     server = app.listen(port, async (v) => {
       const address = server?.address();
       const realPort = typeof address === "string" ? address : address?.port;
-      console.log(`[服务启动成功]: http://localhost:${realPort}`);
+      console.log(`[server] started at http://localhost:${realPort}`);
       resolve(realPort);
     });
   });
@@ -124,7 +124,7 @@ export function closeServe(): Promise<void> {
     if (server) {
       server.close((err?: Error) => {
         if (err) return reject(err);
-        console.log("[服务已关闭]");
+        console.log("[server] closed");
         resolve();
       });
     } else {

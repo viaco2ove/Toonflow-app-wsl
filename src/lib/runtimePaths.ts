@@ -15,7 +15,7 @@ function isWindowsAbsolutePath(input: string): boolean {
 }
 
 function resolveConfiguredPath(rawValue: string | undefined, fallback: string): string {
-  const value = (rawValue || "").trim();
+  const value = (rawValue || "").trim().replace(/^['"]|['"]$/g, "");
   if (!value) return fallback;
   if (path.isAbsolute(value) || isWindowsAbsolutePath(value)) {
     return value;
@@ -36,4 +36,3 @@ export function getUploadRootDir(): string {
     : path.join(process.cwd(), "uploads");
   return resolveConfiguredPath(process.env.UPLOAD_DIR, fallback);
 }
-
