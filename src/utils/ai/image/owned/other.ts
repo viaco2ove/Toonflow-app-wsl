@@ -3,16 +3,31 @@ import { generateImage, generateText, ModelMessage } from "ai";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import axios from "axios";
 
+const normalizeBaseURL = (baseURL: string): string => {
+  let normalized = baseURL.trim().replace(/\|+$/g, "");
+  if (!normalized) throw new Error("缺少baseUrl");
+
+  // OpenAI 兼容 SDK 会自动拼接 /images/generations，避免重复拼接。
+  normalized = normalized.replace(/\/images\/generations\/?$/i, "");
+
+  if (normalized.includes("|")) {
+    throw new Error("other 厂商的 baseURL 不能包含 |，请只填写 OpenAI 兼容根路径（例如 https://example.com/v1）");
+  }
+
+  return normalized;
+};
+
 export default async (input: ImageConfig, config: AIConfig): Promise<string> => {
   if (!config.model) throw new Error("缺少Model名称");
   if (!config.apiKey) throw new Error("缺少API Key");
   if (!config.baseURL) throw new Error("缺少baseUrl");
+  const baseURL = normalizeBaseURL(config.baseURL);
 
   const apiKey = config.apiKey.replace("Bearer ", "");
 
   const otherProvider = createOpenAICompatible({
     name: "xixixi",
-    baseURL: config.baseURL,
+    baseURL,
     headers: {
       Authorization: `Bearer ${apiKey}`,
     },

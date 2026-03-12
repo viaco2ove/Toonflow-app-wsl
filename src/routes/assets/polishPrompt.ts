@@ -50,10 +50,11 @@ export default router.post(
     projectId: zod.number(),
     type: zod.string(),
     name: zod.string(),
-    describe: zod.string(),
+    describe: zod.union([zod.string(), zod.null(), zod.undefined()]),
   }),
   async (req, res) => {
     const { assetsId, projectId, type, name, describe } = req.body;
+    const describeText = typeof describe === "string" ? describe : "";
 
     //获取风格
     const project = await u.db("t_project").where("id", projectId).select("artStyle", "type", "intro").first();
@@ -114,7 +115,7 @@ export default router.post(
   
       **角色设定：**
       - 角色名称:${name},
-      - 角色描述:${describe},
+      - 角色描述:${describeText},
   
       请严格按照系统规范生成人物角色四视图提示词。
   
@@ -138,7 +139,7 @@ export default router.post(
   
       **场景设定：**
       - 场景名称:${name},
-      - 场景描述:${describe},
+      - 场景描述:${describeText},
   
       请严格按照系统规范生成场景图提示词。
   
@@ -161,7 +162,7 @@ export default router.post(
   
       **道具设定：**
       - 道具名称:${name},
-      - 道具描述:${describe},
+      - 道具描述:${describeText},
   
       请严格按照系统规范生成道具图提示词。
   
@@ -179,7 +180,7 @@ export default router.post(
   
       **分镜设定：**
       - 分镜名称:${name},
-      - 分镜描述:${describe},
+      - 分镜描述:${describeText},
   
       请严格按照系统规范生成分镜图提示词。
   

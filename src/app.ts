@@ -11,6 +11,31 @@ import path from "path";
 import u from "@/utils";
 import jwt from "jsonwebtoken";
 
+function ensureNoProxyForLocalhost() {
+  const localHosts = ["127.0.0.1", "localhost", "::1"];
+  const split = (v: string) =>
+    v
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean);
+
+  const merged = new Set<string>([...split(process.env.NO_PROXY || ""), ...split(process.env.no_proxy || "")]);
+  let changed = false;
+  for (const host of localHosts) {
+    if (!merged.has(host)) {
+      merged.add(host);
+      changed = true;
+    }
+  }
+  if (changed || !process.env.NO_PROXY || !process.env.no_proxy) {
+    const value = Array.from(merged).join(",");
+    process.env.NO_PROXY = value;
+    process.env.no_proxy = value;
+  }
+}
+
+ensureNoProxyForLocalhost();
+
 const app = express();
 let server: ReturnType<typeof app.listen> | null = null;
 
@@ -71,10 +96,21 @@ export default async function startServe(randomPort: Boolean = false) {
 
   // 错误处理
   app.use((err: any, _: Request, res: Response, __: NextFunction) => {
-    res.locals.message = err.message;
+    res.locals.message = err?.message;
     res.locals.error = err;
     console.error(err);
-    res.status(err.status || 500).send(err);
+
+    const status = err?.status || err?.statusCode || 500;
+    // Express will serialize native Error objects to `{}`; return a stable JSON payload instead.
+    if (err instanceof Error) {
+      return res.status(status).send({
+        message: err.message || "Internal Server Error",
+        name: err.name,
+        ...(process.env.NODE_ENV === "dev" ? { stack: err.stack } : {}),
+      });
+    }
+    if (typeof err === "string") return res.status(status).send({ message: err });
+    return res.status(status).send(err);
   });
 
   const port = randomPort ? 0 : parseInt(process.env.PORT || "60000");

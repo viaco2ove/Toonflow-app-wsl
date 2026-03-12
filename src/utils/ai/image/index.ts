@@ -10,8 +10,22 @@ import runninghub from "./owned/runninghub";
 import apimart from "./owned/apimart";
 import other from "./owned/other";
 import gemini from "./owned/gemini";
-import modelScope from "./owned/modelScope";
-import grsai from "./owned/grsai";
+
+const QUOTA_ERROR_PATTERNS = [
+  /token quota exhausted/i,
+  /insufficient(?:\s+\w+)?\s+quota/i,
+  /quota(?:\s+\w+)?\s+exhausted/i,
+  /余额不足|配额不足|额度不足|欠费|信用点不足|令牌不足/i,
+];
+
+const isQuotaErrorMessage = (message: string): boolean => QUOTA_ERROR_PATTERNS.some((pattern) => pattern.test(message));
+
+const normalizeImageErrorMessage = (message: string): string => {
+  const normalized = message?.trim() || "图片生成失败";
+  if (!isQuotaErrorMessage(normalized)) return normalized;
+  if (normalized.includes("图片生成额度不足")) return normalized;
+  return `图片生成额度不足，请更换可用 API Key 或充值后重试。${normalized}`;
+};
 
 const urlToBase64 = async (url: string): Promise<string> => {
   const res = await axios.get(url, { responseType: "arraybuffer" });
@@ -27,21 +41,38 @@ const modelInstance = {
   vidu: vidu,
   runninghub: runninghub,
   // apimart: apimart,
-  modelScope,
   other,
-  grsai
 } as const;
 
 export default async (input: ImageConfig, config: AIConfig) => {
+  const debugImageLog = process.env.DEBUG_AI_IMAGE === "1";
+  // Avoid leaking API keys in logs.
+  const redacted =
+    config?.apiKey && config.apiKey.trim().length > 12
+      ? `${config.apiKey.trim().slice(0, 6)}***${config.apiKey.trim().slice(-4)}`
+      : config?.apiKey
+      ? "***"
+      : config?.apiKey;
+  if (debugImageLog) {
+    console.log("%c Line:32 🥪 config", "background:#33a5ff", { ...config, apiKey: redacted });
+  }
   const { model, apiKey, baseURL, manufacturer } = { ...config };
   if (!config || !config?.model || !config?.apiKey || !config?.manufacturer) throw new Error("请检查模型配置是否正确");
 
   const manufacturerFn = modelInstance[manufacturer as keyof typeof modelInstance];
-  if (!manufacturerFn) if (!manufacturerFn) throw new Error("不支持的图片厂商");
-  // if (manufacturer !== "other") {
-  //   const owned = modelList.find((m) => m.model === model);
-  //   if (!owned) throw new Error("不支持的模型");
-  // }
+  if (!manufacturerFn) throw new Error("不支持的图片厂商");
+
+  const owned = modelList.find((m) => m.model === model);
+  if (manufacturer === "other") {
+    if (owned && owned.manufacturer !== "other") {
+      throw new Error(`模型 ${model} 属于 ${owned.manufacturer} 厂商，请将厂商设置为 ${owned.manufacturer}`);
+    }
+  } else {
+    if (!owned) throw new Error("不支持的模型");
+    if (owned.manufacturer !== manufacturer) {
+      throw new Error(`模型 ${model} 与厂商 ${manufacturer} 不匹配，应为 ${owned.manufacturer}`);
+    }
+  }
 
   // 补充图片的 base64 内容类型字符串
   if (input.imageBase64 && input.imageBase64.length > 0) {
@@ -67,8 +98,16 @@ export default async (input: ImageConfig, config: AIConfig) => {
     });
   }
 
-  let imageUrl = await manufacturerFn(input, { model, apiKey, baseURL });
-  if (!input.resType) input.resType = "b64";
-  if (input.resType === "b64" && imageUrl.startsWith("http")) imageUrl = await urlToBase64(imageUrl);
-  return imageUrl;
+  try {
+    let imageUrl = await manufacturerFn(input, { model, apiKey, baseURL });
+    if (debugImageLog) {
+      console.log("%c Line:68 🍷 imageUrl", "background:#4fff4B", imageUrl);
+    }
+    if (!input.resType) input.resType = "b64";
+    if (input.resType === "b64" && imageUrl.startsWith("http")) imageUrl = await urlToBase64(imageUrl);
+    return imageUrl;
+  } catch (error) {
+    const rawMessage = u.error(error).message || "图片生成失败";
+    throw new Error(normalizeImageErrorMessage(rawMessage));
+  }
 };

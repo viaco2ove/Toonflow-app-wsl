@@ -2,10 +2,11 @@ import express from "express";
 import u from "@/utils";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
-import { error, success } from "@/lib/responseFormat";
+import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import sharp from "sharp";
 const router = express.Router();
+const GRID_PROMPT_RE = /四宫格|2x2|2×2|four[-\s]?grid|turnaround|转面图|front view.*left.*right.*back|正面.*左面.*右面.*背面/i;
 interface OutlineItem {
   description: string;
   name: string;
@@ -35,9 +36,15 @@ export default router.post(
     name: z.string(),
     base64: z.string().optional().nullable(),
     prompt: z.string(),
+    size: z.enum(["1K", "2K", "4K"]).optional(),
+    aspectRatio: z.string().optional(),
+    generateMode: z.enum(["single", "grid"]).optional(),
   }),
   async (req, res) => {
-    const { id, type, projectId, base64, prompt, name } = req.body;
+    const { id, type, projectId, base64, prompt, name, generateMode } = req.body;
+    const size: "1K" | "2K" | "4K" = req.body.size ?? "2K";
+    const requestAspectRatio = typeof req.body.aspectRatio === "string" ? req.body.aspectRatio.trim() : "";
+    const isRoleGridRequest = type === "role" && (generateMode === "grid" || GRID_PROMPT_RE.test(prompt));
 
     //获取风格
     const project = await u.db("t_project").where("id", projectId).select("artStyle", "type", "intro").first();
@@ -59,9 +66,38 @@ export default router.post(
     let systemPrompt = "";
     let userPrompt = "";
     if (type == "role") {
-      systemPrompt = role;
-      userPrompt = `
-    请根据以下参数生成角色标准四视图：
+      if (isRoleGridRequest) {
+        // 独立处理角色四宫格，避免和“单图模式”系统提示冲突
+        systemPrompt = `
+你是角色转面图生成助手。
+当用户要求四宫格/转面图时，必须输出一张2x2拼图，不得输出单图或多张分图。
+        `.trim();
+        userPrompt = `
+请根据以下参数生成角色四宫格转面图：
+
+**基础参数：**
+- 画风风格: ${project?.artStyle || "未指定"}
+
+**角色设定：**
+- 名称:${name},
+- 提示词:${prompt},
+
+硬性要求：
+- 输出单张 2x2 四宫格（不是四张分开图）
+- 四格顺序固定：
+  - 左上：FRONT VIEW（正面）
+  - 右上：LEFT SIDE VIEW（左侧）
+  - 左下：RIGHT SIDE VIEW（右侧）
+  - 右下：BACK VIEW（背面）
+- 每格必须是同一角色、同一服装、同一画风的全身照（头到脚完整可见）
+- 每格人物尺度一致，构图居中，禁止裁头、裁脚
+- 可以在每格底部标注英文视角名（FRONT/LEFT/RIGHT/BACK VIEW）
+- 禁止额外人物、宠物、logo、水印、字幕
+        `.trim();
+      } else {
+        systemPrompt = role;
+        userPrompt = `
+    请根据以下参数生成单张角色图：
 
     **基础参数：**
     - 画风风格: ${project?.artStyle || "未指定"}
@@ -70,8 +106,14 @@ export default router.post(
     - 名称:${name},
     - 提示词:${prompt},
 
-    请严格按照系统规范生成人物角色四视图。
-      `;
+    生成要求：
+    - 仅生成一张图片，不要四宫格，不要多视图拼图
+    - 严格遵循提示词中的视角要求（front / left / right / back）
+    - 必须全身入镜（头到脚完整可见），主体居中
+    - 保持与参考图一致的人物身份、服装与风格
+    - 禁止文字、水印、logo、额外人物
+        `.trim();
+      }
     }
     if (type == "scene") {
       systemPrompt = scene;
@@ -124,69 +166,58 @@ export default router.post(
       assetsId: id,
     });
     const apiConfig = await u.getPromptAi("assetsImage");
+    const aspectRatio = requestAspectRatio || (isRoleGridRequest ? "1:1" : "16:9");
 
-    try {
-      const contentStr = await u.ai.image(
-        {
-          systemPrompt,
-          prompt: userPrompt,
-          imageBase64: base64 ? [base64] : [],
-          size: "2K",
-          aspectRatio: "16:9",
-        },
-        apiConfig,
-      );
+    const contentStr = await u.ai.image(
+      {
+        systemPrompt,
+        prompt: userPrompt,
+        imageBase64: base64 ? [base64] : [],
+        size,
+        aspectRatio,
+      },
+      apiConfig,
+    );
 
-      let insertType;
-      const match = contentStr.match(/base64,([A-Za-z0-9+/=]+)/);
-      let buffer = Buffer.from(match && match.length >= 2 ? match[1]! : contentStr!, "base64");
+    let insertType;
+    const match = contentStr.match(/base64,([A-Za-z0-9+/=]+)/);
+    let buffer = Buffer.from(match && match.length >= 2 ? match[1]! : contentStr!, "base64");
 
-      if (type != "storyboard") {
-        //添加文本
-        // buffer = await imageAddText(name, buffer);
-      }
-      let imagePath;
-      if (type == "role") {
-        insertType = "角色";
-        imagePath = `/${projectId}/role/${uuidv4()}.jpg`;
-      }
-      if (type == "scene") {
-        insertType = "场景";
-        imagePath = `/${projectId}/scene/${uuidv4()}.jpg`;
-      }
-      if (type == "props") {
-        insertType = "道具";
-        imagePath = `/${projectId}/props/${uuidv4()}.jpg`;
-      }
-      if (type == "storyboard") {
-        insertType = "分镜";
-        imagePath = `/${projectId}/storyboard/${uuidv4()}.jpg`;
-      }
-
-      await u.oss.writeFile(imagePath!, buffer);
-      const imageData = await u.db("t_image").where("id", imageId).select("*").first();
-      if (imageData) {
-        await u.db("t_image").where("id", imageId).update({
-          state: "生成成功",
-          filePath: imagePath,
-          type: insertType,
-        });
-
-        const path = await u.oss.getFileUrl(imagePath!);
-
-        // const state = await u.db("t_assets").where("id", id).select("state").first();
-
-        return res.status(200).send(success({ path, assetsId: id }));
-      } else {
-        return res.status(500).send("资产已被删除");
-      }
-    } catch (e) {
-      await u.db("t_image").where("id", imageId).update({
-        state: "生成失败",
-      });
-      const msg = u.error(e).message || "图片生成失败";
-      return res.status(400).send(error(msg));
+    if (type != "storyboard") {
+      //添加文本
+      // buffer = await imageAddText(name, buffer);
     }
+    let imagePath;
+    if (type == "role") {
+      insertType = "角色";
+      imagePath = `/${projectId}/role/${uuidv4()}.jpg`;
+    }
+    if (type == "scene") {
+      insertType = "场景";
+      imagePath = `/${projectId}/scene/${uuidv4()}.jpg`;
+    }
+    if (type == "props") {
+      insertType = "道具";
+      imagePath = `/${projectId}/props/${uuidv4()}.jpg`;
+    }
+    if (type == "storyboard") {
+      insertType = "分镜";
+      imagePath = `/${projectId}/storyboard/${uuidv4()}.jpg`;
+    }
+
+    await u.oss.writeFile(imagePath!, buffer);
+
+    await u.db("t_image").where("id", imageId).update({
+      state: "生成成功",
+      filePath: imagePath,
+      type: insertType,
+    });
+
+    const path = await u.oss.getFileUrl(imagePath!);
+
+    // const state = await u.db("t_assets").where("id", id).select("state").first();
+
+    res.status(200).send(success({ path, assetsId: id }));
   },
 );
 async function imageAddText(name: string, imageBuffer: Buffer) {

@@ -28,6 +28,11 @@ class Logger {
   init(): this {
     if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
     this.stream = fs.createWriteStream(LOG_FILE, { flags: "a" });
+    this.stream.on("error", () => {
+      // 日志写入失败不应影响主流程（WSL/终端关闭时常见 EIO/EBADF）
+      this.stream?.destroy();
+      this.stream = null;
+    });
     this.hijack();
     return this;
   }
@@ -55,10 +60,40 @@ class Logger {
   }
 
   private writing = false;
+  private isIgnorableWriteError(err: unknown): boolean {
+    const code = (err as any)?.code;
+    return code === "EIO" || code === "EBADF" || code === "EPIPE";
+  }
+
+  private safeAppend(line: string): void {
+    if (!this.stream || this.stream.destroyed) return;
+    try {
+      this.stream.write(line);
+    } catch (err) {
+      if (!this.isIgnorableWriteError(err)) throw err;
+      this.stream.destroy();
+      this.stream = null;
+    }
+  }
+
+  private safeOriginalWrite(
+    writeFn: typeof process.stdout.write,
+    chunk: any,
+    rest: any[],
+  ): ReturnType<typeof process.stdout.write> {
+    try {
+      return writeFn(chunk, ...rest);
+    } catch (err) {
+      if (this.isIgnorableWriteError(err)) {
+        return true as ReturnType<typeof process.stdout.write>;
+      }
+      throw err;
+    }
+  }
 
   private write(level: LogLevel, args: unknown[]): void {
     const line = `[${this.formatTime()}] [${level.toUpperCase()}] ${args.map((a) => this.stringify(a)).join(" ")}\n`;
-    if (this.stream && !this.stream.destroyed) this.stream.write(line);
+    this.safeAppend(line);
     this.checkRotate();
   }
 
@@ -68,7 +103,7 @@ class Logger {
     try {
       let str = typeof chunk === "string" ? chunk : chunk?.toString?.("utf-8") ?? "";
       str = str.replace(/\x1B\[\d*m/g, ""); // 去除 ANSI 颜色码
-      if (str.trim() && this.stream && !this.stream.destroyed) this.stream.write(str.endsWith("\n") ? str : str + "\n");
+      if (str.trim()) this.safeAppend(str.endsWith("\n") ? str : str + "\n");
     } finally {
       this.writing = false;
     }
@@ -97,9 +132,12 @@ class Logger {
       this.originalConsole[level] = original.bind(console);
       (console as any)[level] = (...args: unknown[]) => {
         this.writing = true;
-        this.write(level, args);
-        this.originalConsole[level]!(...args);
-        this.writing = false;
+        try {
+          this.write(level, args);
+          this.originalConsole[level]!(...args);
+        } finally {
+          this.writing = false;
+        }
       };
     }
 
@@ -109,12 +147,12 @@ class Logger {
 
     process.stdout.write = ((chunk: any, ...rest: any[]) => {
       this.writeRaw(chunk);
-      return this.originalStdoutWrite!(chunk, ...rest);
+      return this.safeOriginalWrite(this.originalStdoutWrite!, chunk, rest);
     }) as typeof process.stdout.write;
 
     process.stderr.write = ((chunk: any, ...rest: any[]) => {
       this.writeRaw(chunk);
-      return this.originalStderrWrite!(chunk, ...rest);
+      return this.safeOriginalWrite(this.originalStderrWrite!, chunk, rest);
     }) as typeof process.stderr.write;
 
     this.isHijacked = true;

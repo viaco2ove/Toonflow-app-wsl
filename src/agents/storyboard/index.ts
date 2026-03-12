@@ -62,10 +62,17 @@ export default class Storyboard {
   private shotIdCounter: number = 0;
   // 存储正在生成分镜图的分镜ID
   private generatingShots: Set<number> = new Set();
+  // 片段持久化存储类型（按 script 维度隔离）
+  private readonly segmentsStoreType: string;
+  // 是否已尝试从持久化存储加载片段
+  private segmentsLoadedFromStore = false;
+  // 当前 segmentAgent 运行是否已显式调用过 updateSegments
+  private segmentUpdatedInCurrentRun = false;
 
   constructor(projectId: number, scriptId: number) {
     this.projectId = projectId;
     this.scriptId = scriptId;
+    this.segmentsStoreType = `storyboardSegments:${scriptId}`;
   }
 
   // 更新shopts
@@ -101,6 +108,153 @@ export default class Storyboard {
     console.log(`\n[${new Date().toLocaleTimeString()}] ${msg}\n`);
   }
 
+  private isQuotaExhaustedMessage(message: string): boolean {
+    if (!message) return false;
+    return [
+      /token quota exhausted/i,
+      /insufficient(?:\s+\w+)?\s+quota/i,
+      /quota(?:\s+\w+)?\s+exhausted/i,
+      /余额不足|配额不足|额度不足|欠费|信用点不足|令牌不足/i,
+    ].some((pattern) => pattern.test(message));
+  }
+
+  private normalizeShotImageError(error: unknown): string {
+    const rawMessage = u.error(error).message || "分镜图生成失败";
+    if (!this.isQuotaExhaustedMessage(rawMessage)) return rawMessage;
+    if (rawMessage.includes("图片生成额度不足")) return rawMessage;
+    return `图片生成额度不足，请在设置中更换可用 API Key 或充值后重试。${rawMessage}`;
+  }
+
+  private cancelRemainingShotImageGeneration(remainingShotIds: number[], reason: string): void {
+    for (const shotId of remainingShotIds) {
+      this.generatingShots.delete(shotId);
+      this.emit("shotImageGenerateError", { shotId, error: `已取消：${reason}` });
+      this.log("分镜图生成取消", `分镜 ${shotId}: 前序分镜触发配额错误，已停止后续生成`);
+    }
+  }
+
+
+
+  private normalizeSegments(segments: Segment[]): Segment[] {
+    const cleaned = segments
+      .filter((seg) => Number.isFinite(seg.index) && seg.index > 0 && seg.description?.trim())
+      .map((seg) => ({
+        index: Math.trunc(seg.index),
+        description: seg.description.trim(),
+        ...(seg.emotion ? { emotion: seg.emotion } : {}),
+        ...(seg.action ? { action: seg.action } : {}),
+      }));
+
+    const uniq = new Map<number, Segment>();
+    for (const seg of cleaned) {
+      if (!uniq.has(seg.index)) uniq.set(seg.index, seg);
+    }
+    return Array.from(uniq.values()).sort((a, b) => a.index - b.index);
+  }
+
+  private parseSegmentsFromText(text: string): Segment[] {
+    const segmentsMap = new Map<number, Segment>();
+    let currentIndex: number | null = null;
+    const lines = text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    for (const line of lines) {
+      const segmentMatch = line.match(/^🎬\s*(\d+)\b/);
+      if (segmentMatch) {
+        currentIndex = Number(segmentMatch[1]);
+        continue;
+      }
+
+      const descMatch = line.match(/^📝\s*片段描述[:：]\s*(.+)$/);
+      if (descMatch && currentIndex != null) {
+        const description = descMatch[1].trim();
+        if (description) segmentsMap.set(currentIndex, { index: currentIndex, description });
+      }
+    }
+
+    // 兼容“1. **xxx**”这类摘要格式
+    if (segmentsMap.size === 0) {
+      const inlineMatches = Array.from(text.matchAll(/(?:^|\n)\s*(\d+)[\.、]\s*\*{0,2}([^*\n]+?)\*{0,2}(?=\n|$)/g));
+      for (const match of inlineMatches) {
+        const index = Number(match[1]);
+        const description = (match[2] || '').trim();
+        if (description) segmentsMap.set(index, { index, description });
+      }
+    }
+
+    return this.normalizeSegments(Array.from(segmentsMap.values()));
+  }
+
+  private parseSegmentsFromHistoryData(rawData?: string | null): Segment[] {
+    if (!rawData) return [];
+    try {
+      const messages = JSON.parse(rawData);
+      if (!Array.isArray(messages)) return [];
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const msg = messages[i];
+        if (msg?.role !== "assistant" || typeof msg?.content !== "string") continue;
+        const parsed = this.parseSegmentsFromText(msg.content);
+        if (parsed.length > 0) return parsed;
+      }
+    } catch (err: any) {
+      this.log("解析历史片段失败", err?.message || String(err));
+    }
+    return [];
+  }
+
+  private async loadSegmentsFromStore(): Promise<void> {
+    if (this.segmentsLoadedFromStore) return;
+    this.segmentsLoadedFromStore = true;
+    try {
+      const row = await u.db('t_chatHistory').where({ projectId: this.projectId, type: this.segmentsStoreType }).first();
+      if (row?.data) {
+        const parsed = JSON.parse(row.data);
+        if (Array.isArray(parsed)) {
+          const normalized = this.normalizeSegments(parsed as Segment[]);
+          if (normalized.length) {
+            this.segments = normalized;
+            this.emit('segmentsUpdated', this.segments);
+            this.log('加载片段数据', `从存储恢复 ${normalized.length} 个片段`);
+            return;
+          }
+        }
+      }
+
+      const historyRow = await u.db("t_chatHistory").where({ projectId: this.projectId, type: "storyboardAgent" }).first();
+      const recovered = this.parseSegmentsFromHistoryData(historyRow?.data);
+      if (!recovered.length) return;
+      this.segments = recovered;
+      await this.saveSegmentsToStore();
+      this.emit("segmentsUpdated", this.segments);
+      this.log("加载片段数据", `从历史对话恢复 ${recovered.length} 个片段`);
+    } catch (err: any) {
+      this.log('加载片段数据失败', err?.message || String(err));
+    }
+  }
+
+  private async saveSegmentsToStore(): Promise<void> {
+    try {
+      const payload = JSON.stringify(this.segments);
+      const existing = await u.db('t_chatHistory').where({ projectId: this.projectId, type: this.segmentsStoreType }).first();
+      if (existing) {
+        await u
+          .db('t_chatHistory')
+          .where({ projectId: this.projectId, type: this.segmentsStoreType })
+          .update({ data: payload, novel: '' });
+      } else {
+        await u.db('t_chatHistory').insert({
+          projectId: this.projectId,
+          type: this.segmentsStoreType,
+          data: payload,
+          novel: '',
+        });
+      }
+    } catch (err: any) {
+      this.log('保存片段数据失败', err?.message || String(err));
+    }
+  }
   // ==================== 剧本相关操作 ====================
 
   getScript = tool({
@@ -181,6 +335,7 @@ ${sections.join("\n\n")}
     description: "获取当前已生成的片段数据，用于生成分镜",
     inputSchema: z.object({}),
     execute: async () => {
+      if (this.segments.length === 0) await this.loadSegmentsFromStore();
       this.log("获取片段数据", `共 ${this.segments.length} 个片段`);
       if (this.segments.length === 0) {
         return "暂无片段数据，请先调用 segmentAgent 生成片段";
@@ -208,10 +363,14 @@ ${sections.join("\n\n")}
         .describe("片段数组"),
     }),
     execute: async ({ segments }: { segments: Segment[] }) => {
-      this.log("更新片段数据", `共 ${segments.length} 个片段`);
-      this.segments = segments;
+      const normalized = this.normalizeSegments(segments);
+      this.log("更新片段数据", `共 ${normalized.length} 个片段`);
+      this.segments = normalized;
+      this.segmentsLoadedFromStore = true;
+      this.segmentUpdatedInCurrentRun = true;
+      await this.saveSegmentsToStore();
       this.emit("segmentsUpdated", this.segments);
-      return `成功存储 ${segments.length} 个片段`;
+      return `成功存储 ${normalized.length} 个片段`;
     },
   });
 
@@ -396,8 +555,11 @@ ${sections.join("\n\n")}
 
       // 异步执行图片生成（不阻塞 Agent 流程）
       this.executeShotImageGeneration(toGenerate).catch((err) => {
-        this.log("分镜图生成错误", err.message);
-        this.emit("shotImageGenerateError", { shotIds: toGenerate, error: err.message });
+        const errorMessage = this.normalizeShotImageError(err);
+        this.log("分镜图生成错误", errorMessage);
+        if (!this.isQuotaExhaustedMessage(errorMessage)) {
+          this.emit("shotImageGenerateError", { shotIds: toGenerate, error: errorMessage });
+        }
       });
 
       let result = `已开始为分镜 ${toGenerate.join(", ")} 生成分镜图，生成过程在后台进行`;
@@ -412,11 +574,26 @@ ${sections.join("\n\n")}
   });
 
   /**
-   * 执行分镜图生成的具体逻辑（异步并发）
+   * 执行分镜图生成的具体逻辑（异步串行）
    * 每个分镜包含多个镜头，所有镜头的提示词合并生成一张宫格图，再分割为单张镜头图片
    */
   async executeShotImageGeneration(shotIds: number[]): Promise<void> {
-    await Promise.all(shotIds.map((shotId) => this.generateSingleShotImage(shotId)));
+    // WSL + Electron 环境下并发过高容易触发渲染层不稳定，改为串行生成以优先保证稳定性
+    for (let i = 0; i < shotIds.length; i++) {
+      const shotId = shotIds[i];
+      try {
+        await this.generateSingleShotImage(shotId);
+      } catch (err) {
+        const errorMessage = this.normalizeShotImageError(err);
+        if (this.isQuotaExhaustedMessage(errorMessage)) {
+          const remainingShotIds = shotIds.slice(i + 1);
+          if (remainingShotIds.length > 0) {
+            this.cancelRemainingShotImageGeneration(remainingShotIds, errorMessage);
+          }
+        }
+        throw new Error(errorMessage);
+      }
+    }
   }
 
   /**
@@ -486,9 +663,13 @@ ${sections.join("\n\n")}
       this.emit("shotsUpdated", this.shots);
       this.log("分镜图生成完成", `分镜 ${shotId}，共 ${imagePaths.length} 张镜头图片`);
     } catch (err: any) {
+      const errorMessage = this.normalizeShotImageError(err);
       this.generatingShots.delete(shotId);
-      this.emit("shotImageGenerateError", { shotId, error: err.message });
-      this.log("分镜图生成失败", `分镜 ${shotId}: ${err.message}`);
+      this.emit("shotImageGenerateError", { shotId, error: errorMessage });
+      this.log("分镜图生成失败", `分镜 ${shotId}: ${errorMessage}`);
+      if (this.isQuotaExhaustedMessage(errorMessage)) {
+        throw new Error(errorMessage);
+      }
     }
   }
 
@@ -605,53 +786,77 @@ ${task}
     this.emit("transfer", { to: agentType });
     this.log(`Sub-Agent 调用`, agentType);
 
-    const promptsList = await u.db("t_prompts").where("code", "in", ["storyboard-segment", "storyboard-shot"]);
-    const promptConfig = await u.getPromptAi("storyboardAgent");
+    if (this.segments.length === 0) await this.loadSegmentsFromStore();
+    if (agentType === "segmentAgent") this.segmentUpdatedInCurrentRun = false;
 
-    const errPrompts = "不论用户说什么，请直接输出Agent配置异常";
+    try {
+      const promptsList = await u.db("t_prompts").where("code", "in", ["storyboard-segment", "storyboard-shot"]);
+      const promptConfig = await u.getPromptAi("storyboardAgent");
 
-    const getAiPromptConfig = (code: string) => {
-      const item = promptsList.find((p) => p.code === code);
-      return item?.customValue || item?.defaultValue || errPrompts;
-    };
-    const segmentAgent = getAiPromptConfig("storyboard-segment");
-    const shotAgent = getAiPromptConfig("storyboard-shot");
-    const SYSTEM_PROMPTS = {
-      segmentAgent: segmentAgent,
-      shotAgent: shotAgent,
-    };
+      const errPrompts = "不论用户说什么，请直接输出Agent配置异常";
 
-    const context = await this.buildFullContext(task);
+      const getAiPromptConfig = (code: string) => {
+        const item = promptsList.find((p) => p.code === code);
+        return item?.customValue || item?.defaultValue || errPrompts;
+      };
+      const segmentAgent = getAiPromptConfig("storyboard-segment");
+      const shotAgent = getAiPromptConfig("storyboard-shot");
+      const SYSTEM_PROMPTS = {
+        segmentAgent: segmentAgent,
+        shotAgent: shotAgent,
+      };
 
-    const { fullStream } = await u.ai.text.stream(
-      {
-        system: SYSTEM_PROMPTS[agentType],
-        tools: this.getSubAgentTools(agentType),
-        messages: [{ role: "user", content: context }],
-        maxStep: 100,
-      },
-      promptConfig,
-    );
+      const context = await this.buildFullContext(task);
 
-    let fullResponse = "";
-    for await (const item of fullStream) {
-      if (item.type == "tool-call") {
-        this.emit("toolCall", { agent: "main", name: item.title, args: null });
+      const { fullStream } = await u.ai.text.stream(
+        {
+          system: SYSTEM_PROMPTS[agentType],
+          tools: this.getSubAgentTools(agentType),
+          messages: [{ role: "user", content: context }],
+          maxStep: 100,
+        },
+        promptConfig,
+      );
+
+      let fullResponse = "";
+      for await (const item of fullStream) {
+        if (item.type == "tool-call") {
+          this.emit("toolCall", { agent: "main", name: item.title, args: null });
+        }
+        if (item.type == "text-delta") {
+          fullResponse += item.text;
+          this.emit("subAgentStream", { agent: agentType, text: item.text });
+        }
       }
-      if (item.type == "text-delta") {
-        fullResponse += item.text;
-        this.emit("subAgentStream", { agent: agentType, text: item.text });
+
+      if (agentType === "segmentAgent" && !this.segmentUpdatedInCurrentRun) {
+        const fallbackSegments = this.parseSegmentsFromText(fullResponse);
+        if (fallbackSegments.length > 0) {
+          this.segments = fallbackSegments;
+          this.segmentsLoadedFromStore = true;
+          await this.saveSegmentsToStore();
+          this.emit("segmentsUpdated", this.segments);
+          this.log("片段兜底存储", `从文本解析并存储 ${fallbackSegments.length} 个片段`);
+        }
       }
+
+      this.emit("subAgentEnd", { agent: agentType });
+      this.history.push({
+        role: "assistant",
+        content: fullResponse,
+      });
+      this.log(`Sub-Agent 完成`, agentType);
+
+      return fullResponse ?? `${agentType}已完成任务`;
+    } catch (err: any) {
+      const code = err?.cause?.code || err?.code;
+      const isTimeout = code === "UND_ERR_BODY_TIMEOUT" || /Body Timeout Error|TypeError:\s*terminated/i.test(String(err?.stack || err?.message || ""));
+      const friendly = isTimeout ? "模型响应超时（网络或上游接口超时），请重试或切换模型。" : err?.message || String(err);
+      this.log("Sub-Agent 失败", `${agentType}: ${friendly}`);
+      this.emit("subAgentEnd", { agent: agentType });
+      this.emit("error", new Error(friendly));
+      return `子代理执行失败：${friendly}`;
     }
-
-    this.emit("subAgentEnd", { agent: agentType });
-    this.history.push({
-      role: "assistant",
-      content: fullResponse,
-    });
-    this.log(`Sub-Agent 完成`, agentType);
-
-    return fullResponse ?? `${agentType}已完成任务`;
   }
 
   private createSubAgentTool(agentType: AgentType, description: string) {
@@ -687,6 +892,8 @@ ${task}
   }
 
   async call(msg: string): Promise<string> {
+    if (this.segments.length === 0) await this.loadSegmentsFromStore();
+
     this.history.push({
       role: "user",
       content: msg,

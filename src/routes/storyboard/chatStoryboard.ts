@@ -21,7 +21,7 @@ router.ws("/", async (ws, req) => {
 
   const existing = await u
     .db("t_chatHistory")
-    .where({ projectId: Number(projectId) })
+    .where({ projectId: Number(projectId), type: "storyboardAgent" })
     .first();
   if (existing) {
     try {
@@ -32,7 +32,6 @@ router.ws("/", async (ws, req) => {
       agent.history = [];
     }
   }
-  agent.history = [];
   // 监听各类事件
   // 流式传输：每个token
   agent.emitter.on("data", (text) => {

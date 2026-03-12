@@ -6,6 +6,7 @@ import { z } from "zod";
 import axios from "axios";
 
 const router = express.Router();
+const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "0.0.0.0", "::1"]);
 
 const prompt = `
 你是一名资深动画导演，擅长将静态分镜转化为简洁、专业、详尽的 Motion Prompt（视频生成动作提示）。你理解镜头语言、情绪节奏，能补充丰富但不重复静态元素，只突出变化与动态。
@@ -97,8 +98,39 @@ const prompt = `
 现在请根据我提供的分镜内容，严格按照以上规则输出 Motion Prompt JSON 对象。
 
 `;
+function filePathFromLocalOssUrl(imageUrl: string): string | null {
+  try {
+    const parsed = new URL(imageUrl);
+    if (!LOCAL_HOSTS.has(parsed.hostname.toLowerCase())) return null;
+    return decodeURIComponent(parsed.pathname).replace(/^\/+/, "");
+  } catch {
+    return null;
+  }
+}
+
+function isLocalOssUrl(imageUrl: string): boolean {
+  try {
+    const parsed = new URL(imageUrl);
+    return LOCAL_HOSTS.has(parsed.hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
 async function urlToBase64(imageUrl: string): Promise<string> {
-  const response = await axios.get(imageUrl, { responseType: "arraybuffer" });
+  if (!imageUrl) throw new Error("图片地址为空");
+  if (/^data:image\//i.test(imageUrl)) return imageUrl;
+
+  const localPath = filePathFromLocalOssUrl(imageUrl);
+  if (localPath) {
+    return u.oss.getImageBase64(localPath);
+  }
+
+  const response = await axios.get(imageUrl, {
+    responseType: "arraybuffer",
+    timeout: 15000,
+    ...(isLocalOssUrl(imageUrl) ? { proxy: false } : {}),
+  });
   const contentType = response.headers["content-type"] || "image/png";
   const base64 = Buffer.from(response.data, "binary").toString("base64");
   return `data:${contentType};base64,${base64}`;

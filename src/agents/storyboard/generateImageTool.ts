@@ -36,6 +36,8 @@ interface ResourceItem {
   intro: string;
 }
 
+const debugStoryboardImage = process.env.DEBUG_STORYBOARD_IMAGE === "1";
+
 // 压缩图片直到不超过指定大小
 async function compressImage(buffer: Buffer, maxSizeBytes: number = 3 * 1024 * 1024): Promise<Buffer> {
   if (buffer.length <= maxSizeBytes) {
@@ -290,7 +292,9 @@ export default async (cells: { prompt: string }[], scriptId: number, projectId: 
   const filteredImages = await filterRelevantAssets(cellPrompts, resources, allImages);
 
   const resourcesMapPrompts = buildResourcesMapPrompts(filteredImages);
-  console.log("====润色前：", cellPrompts);
+  if (debugStoryboardImage) {
+    console.log("====润色前：", cellPrompts);
+  }
   const promptsData = await generateImagePromptsTool({
     prompts: cellPrompts,
     style: `类型：${projectInfo?.type!}，风格：${projectInfo?.artStyle!}`,
@@ -305,7 +309,9 @@ export default async (cells: { prompt: string }[], scriptId: number, projectId: 
   // 注意：请严格按照提示词内容生成图片，确保人物样貌、艺术风格、色调光影一致。
   // `;
   const prompts = promptsData.prompt;
-  console.log("====润色后：", prompts);
+  if (debugStoryboardImage) {
+    console.log("====润色后：", prompts);
+  }
 
   const processedImages = await processImages(filteredImages);
   const apiConfig = await u.getPromptAi("storyboardImage");

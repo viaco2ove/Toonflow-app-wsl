@@ -1,13 +1,65 @@
 import { app, BrowserWindow } from "electron";
 import path from "path";
+import fs from "fs";
 import startServe, { closeServe } from "src/app";
-import { number } from "zod";
 
 // 默认端口配置
 const defaultPort = 60000;
+let mainWindow: BrowserWindow | null = null;
 
-function createMainWindow(port: any): void {
-  const win = new BrowserWindow({
+function isWslLinux(): boolean {
+  if (process.platform !== "linux") return false;
+  return Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP || process.env.WSLENV);
+}
+
+// WSL 下启用兼容模式，规避 Chromium/GTK 在 Wayland/GPU 下的崩溃（SIGTRAP）
+if (isWslLinux()) {
+  const runtimeDir = process.env.XDG_RUNTIME_DIR || `/run/user/${process.getuid?.() ?? "1000"}`;
+  const safeTmpDir = path.join(runtimeDir, "electron-tmp");
+  try {
+    fs.mkdirSync(safeTmpDir, { recursive: true });
+    process.env.TMPDIR = safeTmpDir;
+    process.env.TMP = safeTmpDir;
+    process.env.TEMP = safeTmpDir;
+    app.setPath("temp", safeTmpDir);
+  } catch (err: any) {
+    console.warn("[WSL兼容模式] 设置临时目录失败:", err?.message || String(err));
+  }
+
+  process.env.GDK_BACKEND = "x11";
+  process.env.XDG_SESSION_TYPE = "x11";
+  process.env.OZONE_PLATFORM = "x11";
+  process.env.ELECTRON_OZONE_PLATFORM_HINT = "x11";
+  process.env.GTK_USE_PORTAL = "0";
+
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch("disable-gpu");
+  app.commandLine.appendSwitch("disable-gpu-compositing");
+  app.commandLine.appendSwitch("in-process-gpu");
+  app.commandLine.appendSwitch("use-gl", "swiftshader");
+  app.commandLine.appendSwitch("disable-software-rasterizer");
+  app.commandLine.appendSwitch("ozone-platform", "x11");
+  app.commandLine.appendSwitch(
+    "disable-features",
+    "UseOzonePlatform,WaylandWindowDecorations,WaylandPerSurfaceScale,VizDisplayCompositor,WaylandLinuxDrmSyncobj",
+  );
+  app.commandLine.appendSwitch("disable-dev-shm-usage");
+  console.log(`[WSL兼容模式] 已启用 x11 + 软件渲染，TMPDIR=${process.env.TMPDIR}`);
+
+  let trapCount = 0;
+  process.on("SIGTRAP", () => {
+    trapCount += 1;
+    console.error(`[WSL兼容模式] 捕获 SIGTRAP(${trapCount})，已拦截以避免主进程退出`);
+  });
+}
+
+function createMainWindow(port: number): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.focus();
+    return;
+  }
+
+  mainWindow = new BrowserWindow({
     width: 900,
     height: 600,
     show: true,
@@ -30,12 +82,15 @@ function createMainWindow(port: any): void {
   
   console.log("%c Line:30 🥓 url", "background:#33a5ff", url.toString());
 
-  void win.loadURL(url.toString());
+  void mainWindow.loadURL(url.toString());
+  mainWindow.on("closed", () => {
+    mainWindow = null;
+  });
 }
 app.whenReady().then(async () => {
   try {
     const port = await startServe(false);
-    createMainWindow(60000);
+    createMainWindow(Number(port));
   } catch (err) {
     console.error("[服务启动失败]:", err);
     // 如果服务启动失败，使用默认端口创建窗口

@@ -1,6 +1,30 @@
 import u from "@/utils";
 import axios from "axios";
 import { v4 as uuid } from "uuid";
+
+const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "0.0.0.0", "::1"]);
+
+function tryParseUrl(value: string): URL | null {
+  try {
+    return new URL(value);
+  } catch {
+    return null;
+  }
+}
+
+function isLocalOssUrl(imageUrl: string): boolean {
+  const parsed = tryParseUrl(imageUrl);
+  if (!parsed) return false;
+  return LOCAL_HOSTS.has(parsed.hostname.toLowerCase());
+}
+
+function filePathFromLocalOssUrl(imageUrl: string): string | null {
+  const parsed = tryParseUrl(imageUrl);
+  if (!parsed) return null;
+  if (!LOCAL_HOSTS.has(parsed.hostname.toLowerCase())) return null;
+  return decodeURIComponent(parsed.pathname).replace(/^\/+/, "");
+}
+
 async function getImageBase64ForId(imageId: string | number) {
   const imagePath = await u
     .db("t_assets")
@@ -9,12 +33,35 @@ async function getImageBase64ForId(imageId: string | number) {
     .first();
 
   if (!imagePath || !imagePath.filePath) return ""; // 未找到图片路径
-  const url = await u.oss.getFileUrl(imagePath.filePath);
-  return await urlToBase64(url);
+
+  // 优先走本地文件读取，避免 HTTP 代理回环导致 502。
+  try {
+    return await u.oss.getImageBase64(imagePath.filePath);
+  } catch {
+    const url = await u.oss.getFileUrl(imagePath.filePath);
+    return await urlToBase64(url);
+  }
 }
 
 async function urlToBase64(imageUrl: string): Promise<string> {
-  const response = await axios.get(imageUrl, { responseType: "arraybuffer" });
+  if (!imageUrl) return "";
+  if (/^data:image\//i.test(imageUrl)) return imageUrl;
+
+  const localPath = filePathFromLocalOssUrl(imageUrl);
+  if (localPath) {
+    try {
+      return await u.oss.getImageBase64(localPath);
+    } catch (err) {
+      console.warn("[editImage] local oss read failed, fallback to http:", err);
+    }
+  }
+
+  const response = await axios.get(imageUrl, {
+    responseType: "arraybuffer",
+    timeout: 15000,
+    // 本地 OSS 地址不走代理，避免被 HTTP_PROXY/ALL_PROXY 劫持。
+    ...(isLocalOssUrl(imageUrl) ? { proxy: false } : {}),
+  });
   const contentType = response.headers["content-type"] || "image/png";
   const base64 = Buffer.from(response.data, "binary").toString("base64");
   return `data:${contentType};base64,${base64}`;
@@ -49,14 +96,15 @@ async function convertDirectiveAndImages(images: Record<string, string>, directi
 
   for (const imageVal of Object.values(images)) {
     // 判断是否为base64串
-    const isBase64 = typeof imageVal === "string" && /^data:image\//.test(imageVal);
+    const val = String(imageVal ?? "").trim();
+    const isBase64 = typeof imageVal === "string" && /^data:image\//.test(val);
     if (isBase64) {
-      base64Images.push(imageVal);
-    } else if (typeof imageVal === "number") {
-      const base64 = await getImageBase64ForId(imageVal);
+      base64Images.push(val);
+    } else if (/^\d+$/.test(val)) {
+      const base64 = await getImageBase64ForId(val);
       base64Images.push(base64);
-    } else if (imageVal.includes("http")) {
-      const base64 = await urlToBase64(imageVal);
+    } else if (/^https?:\/\//i.test(val)) {
+      const base64 = await urlToBase64(val);
       base64Images.push(base64);
     }
   }
