@@ -20,7 +20,7 @@
   "scripts": {
     "dev": "nodemon --inspect --exec tsx src/app.ts",
     "dev:gui": "electronmon -r tsx scripts/main.ts",
-    "local:gui": "cross-env NODE_ENV=local electronmon -r tsx scripts/main.ts",
+    "local:gui": "cross-env NODE_ENV=local PREFER_PROCESS_ENV=1 electronmon -r tsx scripts/main.ts",
     "local:gui:win:cmd": "cmd /c .\\run.local.cmd",
     "local:gui:win:ps": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\run.local.ps1",
     "lint": "tsc --noEmit",

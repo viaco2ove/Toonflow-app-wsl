@@ -152,10 +152,14 @@ export default async (knex: Knex, forceInit: boolean = false): Promise<void> => 
         table.text("storyboardImgs");
         table.text("model");
         table.text("errorReason");
+        table.text("providerTaskId");
+        table.text("providerQueryUrl");
+        table.text("providerManufacturer");
         table.integer("time");
         table.integer("state");
         table.integer("scriptId");
         table.integer("configId"); // 关联的视频配置ID
+        table.integer("aiConfigId");
         table.primary(["id"]);
         table.unique(["id"]);
       },

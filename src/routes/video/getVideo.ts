@@ -5,11 +5,19 @@ import { success } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 const router = express.Router();
 const VIDEO_DEBUG = (process.env.AI_VIDEO_DEBUG || "").trim() === "1";
+const VIDEO_DEBUG_VERBOSE = (process.env.AI_VIDEO_DEBUG_VERBOSE || "").trim() === "1";
+const VIDEO_DEBUG_GET_VIDEO = (process.env.AI_VIDEO_DEBUG_GET_VIDEO || "").trim() === "1";
 interface TempAsset {
   videoId: number;
   filePath: string;
   type: string;
 }
+
+const pickTail = (value: string, max = 48): string => {
+  if (!value) return "";
+  if (value.length <= max) return value;
+  return `...${value.slice(-max)}`;
+};
 
 // 获取视频
 export default router.post(
@@ -25,10 +33,13 @@ export default router.post(
   }),
   async (req, res) => {
     const { scriptId, specifyIds } = req.body;
-    if (VIDEO_DEBUG) {
+    if (VIDEO_DEBUG && VIDEO_DEBUG_GET_VIDEO) {
+      const previewIds = Array.isArray(specifyIds) ? specifyIds.slice(0, 10) : [];
       console.log("[video] /video/getVideo request", {
         scriptId,
         specifyIdsCount: Array.isArray(specifyIds) ? specifyIds.length : 0,
+        specifyIdsPreview: previewIds,
+        ...(VIDEO_DEBUG_VERBOSE ? { body: req.body } : {}),
       });
     }
 
@@ -90,10 +101,32 @@ export default router.post(
         };
       }),
     );
-    if (VIDEO_DEBUG) {
+    if (VIDEO_DEBUG && VIDEO_DEBUG_GET_VIDEO) {
+      const stateCounter = data.reduce(
+        (acc, item: any) => {
+          const state = Number(item?.state);
+          if (state === 1) acc.success += 1;
+          else if (state === 0) acc.pending += 1;
+          else if (state === -1) acc.failed += 1;
+          else acc.other += 1;
+          return acc;
+        },
+        { pending: 0, success: 0, failed: 0, other: 0 },
+      );
+      const sample = data.slice(0, 5).map((item: any) => ({
+        id: item.id,
+        configId: item.configId,
+        state: item.state,
+        duration: item.time,
+        errorReason: item.errorReason ? pickTail(String(item.errorReason), 80) : "",
+        filePath: item.filePath ? pickTail(String(item.filePath), 72) : "",
+      }));
       console.log("[video] /video/getVideo response", {
         scriptId,
         resultCount: data.length,
+        ...stateCounter,
+        resultIdPreview: data.slice(0, 10).map((item: any) => item.id),
+        sample,
       });
     }
     res.status(200).send(success(data));

@@ -1,4 +1,4 @@
-// @db-hash 0f9789bd5ad2eebd79bd502988efcb4e
+// @db-hash dfc25bc59f57e02267612afb993b59a7
 //该文件由脚本自动生成，请勿手动修改
 
 export interface t_aiModelMap {
@@ -147,6 +147,9 @@ export interface t_video {
   'id'?: number;
   'model'?: string | null;
   'prompt'?: string | null;
+  'providerManufacturer'?: string | null;
+  'providerQueryUrl'?: string | null;
+  'providerTaskId'?: string | null;
   'resolution'?: string | null;
   'scriptId'?: number | null;
   'state'?: number | null;

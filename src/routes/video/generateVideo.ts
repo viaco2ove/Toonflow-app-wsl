@@ -11,6 +11,7 @@ import path from "path";
 
 const router = express.Router();
 const VIDEO_DEBUG = (process.env.AI_VIDEO_DEBUG || "").trim() === "1";
+const activeVideoTaskIds = new Set<number>();
 
 export type VideoGenerateMode = "startEnd" | "multi" | "single" | "text";
 
@@ -25,6 +26,10 @@ export interface CreateVideoTaskInput {
   prompt: string;
   mode: VideoGenerateMode;
   audioEnabled: boolean;
+}
+
+export function isVideoTaskActive(videoId: number): boolean {
+  return activeVideoTaskIds.has(videoId);
 }
 
 const getPathname = (url: string): string => {
@@ -114,9 +119,11 @@ export async function createVideoTask(input: CreateVideoTaskInput): Promise<{ id
   const [videoId] = await u.db("t_video").insert({
     scriptId,
     configId: configId || null,
+    aiConfigId: aiConfigData?.id || null,
     time: duration,
     resolution,
     prompt,
+    model: aiConfigData?.model || "",
     firstFrame,
     storyboardImgs: JSON.stringify(storyboardImgs),
     filePath: savePath,
@@ -208,6 +215,7 @@ async function generateVideoAsync(
   aiConfigData: t_config,
   mode: string,
 ) {
+  activeVideoTaskIds.add(videoId);
   try {
     if (VIDEO_DEBUG) {
       console.log("[video] generate async start", {
@@ -293,6 +301,8 @@ ${prompt}
       .db("t_video")
       .where("id", videoId)
       .update({ state: -1, errorReason: u.error(err).message });
+  } finally {
+    activeVideoTaskIds.delete(videoId);
   }
 }
 

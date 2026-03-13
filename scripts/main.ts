@@ -90,6 +90,13 @@ function createMainWindow(port: number): void {
 }
 app.whenReady().then(async () => {
   try {
+    console.log("[video debug flags]", {
+      AI_VIDEO_DEBUG: (process.env.AI_VIDEO_DEBUG || "").trim() || "0",
+      AI_VIDEO_DEBUG_VERBOSE: (process.env.AI_VIDEO_DEBUG_VERBOSE || "").trim() || "0",
+      AI_VIDEO_DEBUG_GET_VIDEO: (process.env.AI_VIDEO_DEBUG_GET_VIDEO || "").trim() || "0",
+      AI_VIDEO_POLL_MAX_ATTEMPTS: (process.env.AI_VIDEO_POLL_MAX_ATTEMPTS || "").trim() || "(default)",
+      AI_VIDEO_POLL_INTERVAL_MS: (process.env.AI_VIDEO_POLL_INTERVAL_MS || "").trim() || "(default)",
+    });
     const port = await startServe(false);
     createMainWindow(Number(port));
   } catch (err) {
