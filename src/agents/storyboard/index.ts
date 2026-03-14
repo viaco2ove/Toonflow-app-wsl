@@ -45,6 +45,21 @@ interface AssetsType {
   type: "role" | "props" | "scene";
   text: string;
 }
+
+type ScriptRow = {
+  id: number;
+  projectId: number;
+  name?: string;
+  content?: string;
+  outlineId?: number | null;
+};
+
+type OutlineAsset = { name?: string; description?: string };
+type OutlineData = {
+  characters?: OutlineAsset[];
+  props?: OutlineAsset[];
+  scenes?: OutlineAsset[];
+};
 // ==================== 主类 ====================
 
 export default class Storyboard {
@@ -256,14 +271,38 @@ export default class Storyboard {
   }
   // ==================== 剧本相关操作 ====================
 
+  private async loadCurrentScript(): Promise<ScriptRow> {
+    const script = (await u.db("t_script").where({ id: this.scriptId, projectId: this.projectId }).first()) as ScriptRow | undefined;
+    if (!script) throw new Error(`当前剧本不存在（projectId=${this.projectId}, scriptId=${this.scriptId}）`);
+    return script;
+  }
+
+  private filterAssetsByScript(outline: OutlineData | null | undefined, scriptContent: string) {
+    const rawCharacters = Array.isArray(outline?.characters) ? outline!.characters! : [];
+    const rawProps = Array.isArray(outline?.props) ? outline!.props! : [];
+    const rawScenes = Array.isArray(outline?.scenes) ? outline!.scenes! : [];
+    const content = String(scriptContent || "");
+    const byContent = (items: OutlineAsset[]) => {
+      const matched = items.filter((item) => {
+        const name = String(item?.name || "").trim();
+        return Boolean(name) && content.includes(name);
+      });
+      return matched.length ? matched : items;
+    };
+    return {
+      characters: byContent(rawCharacters),
+      props: byContent(rawProps),
+      scenes: byContent(rawScenes),
+    };
+  }
+
   getScript = tool({
     title: "getScript",
     description: "获取剧本内容",
     inputSchema: z.object({}),
     execute: async () => {
       this.log("获取剧本", `scriptId: ${this.scriptId}`);
-      const script = await u.db("t_script").where({ id: this.scriptId, projectId: this.projectId }).first();
-      if (!script) throw new Error("剧本不存在");
+      const script = await this.loadCurrentScript();
       return `剧本集：${script.name}\n\n内容：\n\`\`\`${script.content}\`\`\``;
     },
   });
@@ -279,18 +318,19 @@ export default class Storyboard {
     inputSchema: z.object({}),
     execute: async () => {
       this.log("获取资产列表", `scriptId: ${this.scriptId}`);
-      const scriptData = await u.db("t_script").where({ id: this.scriptId, projectId: this.projectId }).first();
+      const scriptData = await this.loadCurrentScript();
       const row = await u.db("t_outline").where({ id: scriptData?.outlineId!, projectId: this.projectId }).first();
-      const outline: any | null = row?.data ? JSON.parse(row.data) : null;
+      const outline: OutlineData | null = row?.data ? JSON.parse(row.data) : null;
 
       if (!outline) {
         return "暂无资产数据";
       }
+      const filtered = this.filterAssetsByScript(outline, String(scriptData?.content || ""));
 
       // 提取资源名称和描述（与generateImageTool保持一致的字段名）
-      const resources = outline
+      const resources = filtered
         ? (["characters", "props", "scenes"] as const).flatMap(
-            (k) => outline[k]?.map((i: any) => ({ name: i.name, description: i.description })) ?? [],
+            (k) => filtered[k]?.map((i: any) => ({ name: i.name, description: i.description })) ?? [],
           )
         : [];
 
@@ -299,9 +339,9 @@ export default class Storyboard {
       }
 
       // 分类提取资源并格式化
-      const characters = outline?.characters?.map((item: any) => `- ${item.name}${item.description ? `：${item.description}` : ""}`) ?? [];
-      const props = outline?.props?.map((item: any) => `- ${item.name}${item.description ? `：${item.description}` : ""}`) ?? [];
-      const scenes = outline?.scenes?.map((item: any) => `- ${item.name}${item.description ? `：${item.description}` : ""}`) ?? [];
+      const characters = filtered?.characters?.map((item: any) => `- ${item.name}${item.description ? `：${item.description}` : ""}`) ?? [];
+      const props = filtered?.props?.map((item: any) => `- ${item.name}${item.description ? `：${item.description}` : ""}`) ?? [];
+      const scenes = filtered?.scenes?.map((item: any) => `- ${item.name}${item.description ? `：${item.description}` : ""}`) ?? [];
 
       const sections = [
         characters.length ? `【角色】\n${characters.join("\n")}` : "",
@@ -731,15 +771,16 @@ ${sections.join("\n\n")}
 
   private async buildEnvironmentContext(): Promise<string> {
     const projectInfo = await u.db("t_project").where({ id: this.projectId }).first();
-    const scriptData = await u.db("t_script").where({ id: this.scriptId, projectId: this.projectId }).first();
+    const scriptData = await this.loadCurrentScript();
     const outlineId = Number(scriptData?.outlineId || 0);
     const row = outlineId > 0 ? await u.db("t_outline").where({ id: outlineId, projectId: this.projectId }).first() : null;
-    const outline: any | null = row?.data ? JSON.parse(row.data) : null;
+    const outline: OutlineData | null = row?.data ? JSON.parse(row.data) : null;
+    const filtered = this.filterAssetsByScript(outline, String(scriptData?.content || ""));
 
     // 分类提取资源名称
-    const characters = outline?.characters?.map((i: any) => i.name) ?? [];
-    const props = outline?.props?.map((i: any) => i.name) ?? [];
-    const scenes = outline?.scenes?.map((i: any) => i.name) ?? [];
+    const characters = filtered?.characters?.map((i: any) => i.name) ?? [];
+    const props = filtered?.props?.map((i: any) => i.name) ?? [];
+    const scenes = filtered?.scenes?.map((i: any) => i.name) ?? [];
 
     const assetList =
       [
@@ -766,6 +807,33 @@ ${sections.join("\n\n")}
 ${assetList}
 
 </环境信息>`;
+  }
+
+  private async buildSegmentAgentContext(task: string): Promise<string> {
+    const env = await this.buildEnvironmentContext();
+    const scriptData = await this.loadCurrentScript();
+    const scriptName = String(scriptData?.name || `脚本${this.scriptId}`);
+    const scriptContent = String(scriptData?.content || "").trim();
+    return `${env}
+
+<当前剧本>
+剧本ID: ${this.scriptId}
+剧本名称: ${scriptName}
+剧本正文:
+\`\`\`
+${scriptContent}
+\`\`\`
+</当前剧本>
+
+<执行约束>
+1. 只能基于“当前剧本”生成片段，禁止引用其他剧集或其他项目内容。
+2. 若当前剧本信息不足，请明确说明不足点，不要编造外部剧情。
+3. 输出片段序号必须从 1 开始连续编号。
+</执行约束>
+
+<当前任务>
+${task}
+</当前任务>`;
   }
 
   private buildConversationHistory(): string {
@@ -846,7 +914,10 @@ ${task}
         shotAgent: shotAgent,
       };
 
-      const context = await this.buildFullContext(task);
+      const context = agentType === "segmentAgent" ? await this.buildSegmentAgentContext(task) : await this.buildFullContext(task);
+      if (agentType === "segmentAgent") {
+        this.log("segmentAgent上下文", `projectId=${this.projectId}, scriptId=${this.scriptId}, taskLength=${task.length}`);
+      }
 
       const { fullStream } = await u.ai.text.stream(
         {

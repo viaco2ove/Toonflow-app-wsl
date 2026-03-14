@@ -4,8 +4,11 @@ import { z } from "zod";
 import { success, error } from "@/lib/responseFormat";
 import { validateFields } from "@/middleware/middleware";
 import {
+  ChatMode,
+  buildChatHistoryTitle,
   buildHistoryPreview,
   extractText,
+  getProjectScriptMap,
   getModeFromScriptId,
   getSessionIdFromType,
   getSessionMetaMap,
@@ -34,6 +37,7 @@ export default router.post(
     const projectMap = new Map<number, string>();
     const projectIds = projects.map((item) => item.id);
     for (const item of projects) projectMap.set(item.id, item.name);
+    const projectScriptMap = await getProjectScriptMap(projectIds);
 
     const row = await u
       .db("t_chatHistory")
@@ -56,7 +60,7 @@ export default router.post(
 
     let sessionId = "";
     let title = type === "outlineAgent" ? "大纲会话" : "旧版分镜会话";
-    let mode = type === "outlineAgent" ? "outline" : "legacy";
+    let mode: ChatMode = type === "outlineAgent" ? "outline" : "legacy";
     let scriptId: number | null = null;
 
     if (isStoryboardSessionType(type)) {
@@ -66,6 +70,9 @@ export default router.post(
       mode = getModeFromScriptId(scriptId);
       title = sessionMeta?.title || (sessionId ? `会话 ${sessionId.slice(0, 8)}` : "会话");
     }
+    const absScriptId = Number.isFinite(Number(scriptId)) ? Math.abs(Number(scriptId)) : 0;
+    const scriptName = projectScriptMap.get(projectId)?.get(absScriptId)?.name || (absScriptId > 0 ? `第${absScriptId}集` : "未知集");
+    const displayTitle = buildChatHistoryTitle(projectName, mode, sessionId, scriptId, scriptName);
 
     const messageList = history.map((item: any, index: number) => {
       const role =
@@ -90,9 +97,12 @@ export default router.post(
         projectName,
         type,
         mode,
+        usage: mode === "video" ? "视频" : mode === "storyboard" ? "分镜" : mode === "outline" ? "大纲" : "历史",
         sessionId,
         scriptId,
+        scriptName,
         title,
+        displayTitle,
         preview,
         messageCount: history.length,
         messageList,
@@ -100,4 +110,3 @@ export default router.post(
     );
   },
 );
-

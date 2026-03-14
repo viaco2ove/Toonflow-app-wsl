@@ -18,6 +18,12 @@ export interface UserProject {
   name: string;
 }
 
+export interface ScriptLite {
+  id: number;
+  projectId: number;
+  name: string;
+}
+
 const safeParseJson = <T>(value: string | null | undefined, fallback: T): T => {
   if (!value) return fallback;
   try {
@@ -94,6 +100,40 @@ export const getUserProjects = async (userId: number): Promise<UserProject[]> =>
   return rows.map((row: any) => ({ id: Number(row.id), name: String(row.name || "") })).filter((row) => Number.isFinite(row.id));
 };
 
+export const getProjectScriptMap = async (projectIds: number[]): Promise<Map<number, Map<number, ScriptLite>>> => {
+  const result = new Map<number, Map<number, ScriptLite>>();
+  if (!projectIds.length) return result;
+  const rows = await u.db("t_script").whereIn("projectId", projectIds).select("id", "projectId", "name");
+  for (const row of rows) {
+    const projectId = Number(row.projectId);
+    const scriptId = Number(row.id);
+    if (!Number.isFinite(projectId) || !Number.isFinite(scriptId)) continue;
+    if (!result.has(projectId)) result.set(projectId, new Map<number, ScriptLite>());
+    result.get(projectId)!.set(scriptId, {
+      id: scriptId,
+      projectId,
+      name: String(row.name || `脚本${scriptId}`),
+    });
+  }
+  return result;
+};
+
+export const buildChatHistoryTitle = (
+  projectName: string,
+  mode: ChatMode,
+  sessionId: string,
+  scriptId: number | null,
+  scriptName?: string,
+): string => {
+  const safeProject = String(projectName || "未命名项目").trim() || "未命名项目";
+  const usage = mode === "video" ? "视频" : mode === "storyboard" ? "分镜" : mode === "outline" ? "大纲" : "会话";
+  const sid = Number(scriptId);
+  const absScriptId = Number.isFinite(sid) ? Math.abs(sid) : 0;
+  const episode = String(scriptName || (absScriptId > 0 ? `第${absScriptId}集` : "未知集")).trim() || "未知集";
+  const shortSession = String(sessionId || "legacy").trim() || "legacy";
+  return `${safeProject}_${episode}_${usage}_${shortSession}`;
+};
+
 export const getSessionMetaMap = async (projectIds: number[]): Promise<Map<number, Map<string, SessionMetaLite>>> => {
   const result = new Map<number, Map<string, SessionMetaLite>>();
   if (!projectIds.length) return result;
@@ -148,4 +188,3 @@ export const isSupportedChatType = (type: string): boolean => {
   if (isStoryboardSessionType(type)) return true;
   return type === "outlineAgent" || type === "storyboardAgent";
 };
-
