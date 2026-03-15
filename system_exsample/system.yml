@@ -1,0 +1,10 @@
+web_project: /mnt/d/users/xxx/PycharmProjects/Toonflow-web
+current_project: /mnt/d/users/xxx/tools/toonflow-app-run
+current_project_modifications:
+  - env/README.md
+  - scripts/web/READEME.md
+  - scripts/web/index.bak.2026_3_15.html
+  - scripts/web/index.html
+notes:
+  - 前端源码在 web_project；当前仓库 scripts/web/index.html 为构建产物文件
+updated_at: 2026-03-15
